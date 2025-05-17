@@ -5,6 +5,7 @@ pragma solidity ^0.8.24;
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IBalancerVault} from "./Interfaces/IBalancerVault.sol";
 import {IUniswapV3SwapRouter} from "./Interfaces/IUniswapV3SwapRouter.sol";
@@ -42,6 +43,7 @@ import {AggregatorV3Interface} from "lib/chainlink/contracts/src/v0.8/shared/int
  */
 contract ArbitrageBot is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
+    using SafeERC20 for IERC20Permit;
 
     // ============ Errors ============
     error ArbitrageBot__InvalidAddress();
@@ -85,7 +87,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     // Flash loan callback identifier
     bytes32 private constant FLASH_LOAN_CALLBACK_SUCCESS = keccak256("ERC3156FlashBorrower.onFlashLoan");
 
-    // Price feeds for token pairs (optional but recommended)
+    // Price feeds for token pairs
     mapping(address => address) private s_priceFeeds;
 
     // ============ Events ============
@@ -110,7 +112,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
 
     // ============ Constructor ============
     /**
-     * @notice Initialize the arbitrage bot with required protocol addresses and parameters
+     * @notice Initializing the arbitrage bot with required protocol addresses and parameters
      * @param balancerVault Address of Balancer Vault for flash loans
      * @param uniswapRouter Address of Uniswap V3 Swap Router
      * @param pancakeRouter Address of PancakeSwap Router
@@ -288,7 +290,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         }
 
         // Approve Balancer to take back the loan amount + fee
-        IERC20(params.tokenBorrow).safeApprove(i_balancerVault, repayAmount);
+        IERC20(params.tokenBorrow).approve(i_balancerVault, repayAmount);
 
         // Send profit to owner
         if (netProfit > 0) {
@@ -302,6 +304,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     }
 
     // ============ Admin Functions ============
+
     /**
      * @notice Set minimum profit threshold
      * @param newThreshold New minimum profit required (in wei)
@@ -386,6 +389,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     function getPreferredUniswapPoolFee(address tokenA, address tokenB) external view returns (uint24) {
         return s_preferredUniswapPoolFees[tokenA][tokenB];
     }
+
     /**
      * @notice Set preferred Uniswap pool fee for a token pair
      * @param tokenA First token in the pair
@@ -393,7 +397,6 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
      * @param fee The fee tier (e.g., 500 = 0.05%, 3000 = 0.3%, 10000 = 1%)
      * @dev Only callable by owner
      */
-
     function setPreferredUniswapPoolFee(address tokenA, address tokenB, uint24 fee) external onlyOwner {
         if (tokenA == address(0) || tokenB == address(0)) {
             revert ArbitrageBot__InvalidAddress();
@@ -407,6 +410,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     }
 
     // ============ Internal Functions ============
+
     /**
      * @notice Swap tokens on Uniswap V3
      * @param tokenIn Input token
@@ -415,8 +419,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
      * @param poolFee Fee tier of the pool
      */
     function _swapOnUniswap(address tokenIn, address tokenOut, uint256 amountIn, uint24 poolFee) internal {
-        // Approve router to spend tokens
-        IERC20(tokenIn).safeApprove(i_uniswapRouter, amountIn);
+        IERC20(tokenIn).approve(i_uniswapRouter, amountIn);
 
         // Calculate minimum output based on slippage tolerance
         uint256 amountOutMin = _calculateMinimumOutput(
@@ -442,7 +445,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         IUniswapV3SwapRouter(i_uniswapRouter).exactInputSingle(params);
 
         // Reset approval to 0
-        IERC20(tokenIn).safeApprove(i_uniswapRouter, 0);
+        IERC20(tokenIn).approve(i_uniswapRouter, 0);
     }
 
     /**
@@ -453,7 +456,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
      */
     function _swapOnPancakeSwap(address tokenIn, address tokenOut, uint256 amountIn) internal {
         // Approve router to spend tokens
-        IERC20(tokenIn).safeApprove(i_pancakeRouter, amountIn);
+        IERC20(tokenIn).approve(i_pancakeRouter, amountIn);
 
         // Calculate minimum output based on slippage tolerance
         uint256 amountOutMin = _calculateMinimumOutput(
@@ -478,7 +481,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         );
 
         // Reset approval to 0
-        IERC20(tokenIn).safeApprove(i_pancakeRouter, 0);
+        IERC20(tokenIn).approve(i_pancakeRouter, 0);
     }
 
     /**
@@ -643,14 +646,14 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
             address outFeed = s_priceFeeds[tokenOut];
 
             try AggregatorV3Interface(inFeed).latestRoundData() returns (
-                uint80 roundId, int256 priceIn, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound
+                uint80, int256 priceIn, uint256, uint256, uint80
             ) {
                 try AggregatorV3Interface(outFeed).latestRoundData() returns (
-                    uint80 outRoundId,
+                    uint80, // roundId
                     int256 priceOut,
-                    uint256 outStartedAt,
-                    uint256 outUpdatedAt,
-                    uint80 outAnsweredInRound
+                    uint256, // startedAt
+                    uint256, // updatedAt
+                    uint80 // answeredInRound
                 ) {
                     if (priceIn > 0 && priceOut > 0) {
                         // Get token decimals
@@ -675,9 +678,17 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     }
 
     // ============ View Functions ============
+
     /**
      * @notice Get contract configuration parameters
-     * @return Configuration struct with current values
+     * @return balancerVault Address of the Balancer Vault
+     * @return uniswapRouter Address of the Uniswap Router
+     * @return pancakeRouter Address of the PancakeSwap Router
+     * @return uniswapQuoter Address of the Uniswap Quoter
+     * @return minProfitThreshold Minimum profit threshold in wei
+     * @return slippageTolerance Slippage tolerance in basis points
+     * @return maxGasPrice Maximum allowed gas price
+     * @return isActive Contract active status
      */
     function getConfig()
         external

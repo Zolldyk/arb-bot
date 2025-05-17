@@ -3,10 +3,28 @@ src = "src"
 out = "out"
 libs = ["lib"]
 
+# Optimizer settings
+optimizer = true
+optimizer_runs = 1000000
+via_ir = true
+
+# Gas reporting
+gas_reports = ["ArbitrageBot"]
+
 # Remappings
 remappings = [
     "@openzeppelin/=lib/openzeppelin-contracts/",
     "forge-std/=lib/forge-std/src/",
 ]
+
+# For building with --via-ir
+[profile.via-ir]
+via_ir = true
+
+# For gas optimizing
+[profile.optimized]
+via_ir = true
+optimizer = true
+optimizer_runs = 1000000
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
