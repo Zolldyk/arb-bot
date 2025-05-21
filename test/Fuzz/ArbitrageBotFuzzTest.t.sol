@@ -83,4 +83,190 @@ contract ArbitrageBotFuzzTest is Test {
         mockWETH.mint(address(mockUniswapRouter), 1000 ether);
         mockWETH.mint(address(mockPancakeRouter), 1000 ether);
     }
+
+    /**
+     * @notice Fuzz test for slippage tolerance setting
+     * @param slippageTolerance Random slippage tolerance value
+     */
+    function testFuzz_SlippageTolerance(uint256 slippageTolerance) public {
+        // Bound slippage tolerance to reasonable values
+        slippageTolerance = bound(slippageTolerance, 1, 1000);
+
+        // Set slippage tolerance
+        vm.prank(owner);
+        arbitrageBot.setSlippageTolerance(slippageTolerance);
+
+        // Get config
+        (,,,,, uint256 actualSlippageTolerance,,) = arbitrageBot.getConfig();
+
+        // Verify slippage tolerance was set correctly
+        assertEq(actualSlippageTolerance, slippageTolerance, "Slippage tolerance should be set correctly");
+    }
+
+    /**
+     * @notice Fuzz test for min profit threshold setting
+     * @param minProfitThreshold Random minimum profit threshold
+     */
+    function testFuzz_MinProfitThreshold(uint256 minProfitThreshold) public {
+        // Bound min profit threshold to reasonable values
+        minProfitThreshold = bound(minProfitThreshold, 1, 1000000 * 1e6);
+
+        // Set min profit threshold
+        vm.prank(owner);
+        arbitrageBot.setMinProfitThreshold(minProfitThreshold);
+
+        // Get config
+        (,,,, uint256 actualMinProfitThreshold,,,) = arbitrageBot.getConfig();
+
+        // Verify min profit threshold was set correctly
+        assertEq(actualMinProfitThreshold, minProfitThreshold, "Min profit threshold should be set correctly");
+    }
+
+    /**
+     * @notice Fuzz test for price discrepancy profitability
+     * @param uniswapPrice Uniswap price for WETH/USDC
+     * @param pancakePrice PancakeSwap price for WETH/USDC
+     * @param loanAmount Amount to borrow in flash loan
+     */
+    function testFuzz_PriceDiscrepancyProfitability(uint256 uniswapPrice, uint256 pancakePrice, uint256 loanAmount)
+        public
+    {
+        // Bound inputs to reasonable values
+        // Price between $2000-$4000 per ETH
+        uniswapPrice = bound(uniswapPrice, 2000 * 1e6, 4000 * 1e6);
+        pancakePrice = bound(pancakePrice, 2000 * 1e6, 4000 * 1e6);
+
+        // Loan amount between 0.1-10 ETH
+        loanAmount = bound(loanAmount, 0.1 ether, 10 ether);
+
+        // Ensure there's a price difference (at least 1%)
+        if (uniswapPrice <= pancakePrice) {
+            uniswapPrice = pancakePrice * 101 / 100;
+        }
+
+        // Set exchange rates
+        mockUniswapRouter.setExchangeRate(address(mockWETH), address(mockUSDC), uniswapPrice * 1e18 / 1e18);
+        mockUniswapRouter.setExchangeRate(address(mockUSDC), address(mockWETH), 1e18 / uniswapPrice);
+
+        mockPancakeRouter.setExchangeRate(address(mockWETH), address(mockUSDC), pancakePrice * 1e18 / 1e18);
+        mockPancakeRouter.setExchangeRate(address(mockUSDC), address(mockWETH), 1e18 / pancakePrice);
+
+        // Set quotes for the Uniswap Quoter
+        mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), 500, uniswapPrice * 1e18 / 1e18);
+        mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, 1e18 / uniswapPrice);
+
+        // Calculate expected profit
+        uint256 step1Output = loanAmount * pancakePrice / 1e18; // Buy USDC with WETH on PancakeSwap
+        uint256 step1Fee = loanAmount * 25 / 10000; // PancakeSwap fee (0.25%)
+        uint256 step1OutputAfterFee = loanAmount * (10000 - 25) / 10000 * pancakePrice / 1e18;
+
+        uint256 step2Output = step1OutputAfterFee * 1e18 / uniswapPrice; // Buy WETH with USDC on Uniswap
+        uint256 step2Fee = step1OutputAfterFee * 5 / 10000; // Uniswap fee (0.05% pool)
+        uint256 step2OutputAfterFee = step1OutputAfterFee * (10000 - 5) / 10000 * 1e18 / uniswapPrice;
+
+        uint256 flashLoanFee = loanAmount * 9 / 10000; // Balancer flash loan fee (0.09%)
+        uint256 expectedProfit =
+            step2OutputAfterFee > (loanAmount + flashLoanFee) ? step2OutputAfterFee - (loanAmount + flashLoanFee) : 0;
+
+        // Determine if arbitrage should be profitable
+        bool shouldBeSuccessful = expectedProfit >= MIN_PROFIT_THRESHOLD;
+
+        // Prepare for arbitrage
+        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 1 ether); // Extra buffer
+
+        vm.startPrank(address(arbitrageBot));
+        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 1 ether);
+        mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
+        vm.stopPrank();
+
+        // Execute arbitrage
+        vm.startPrank(owner);
+
+        try arbitrageBot.executeArbitrage(
+            address(mockWETH),
+            address(mockUSDC),
+            loanAmount,
+            500,
+            false // PancakeSwap to Uniswap (exploit price difference)
+        ) {
+            // If execution succeeds, check that it was expected to be profitable
+            assertTrue(shouldBeSuccessful, "Arbitrage succeeded but wasn't expected to be profitable");
+
+            // Check that owner received profit
+            uint256 ownerBalance = mockWETH.balanceOf(owner);
+            assertGt(ownerBalance, 0, "Owner should have received profit");
+        } catch {
+            // If execution fails, check that it wasn't expected to be profitable
+            assertFalse(shouldBeSuccessful, "Arbitrage failed but was expected to be profitable");
+        }
+
+        vm.stopPrank();
+    }
+
+    /**
+     * @notice Fuzz test for different fee tiers
+     * @param uniswapFee Uniswap fee tier
+     */
+    function testFuzz_FeeTiers(uint24 uniswapFee) public {
+        // Bound fee tier to valid values
+        vm.assume(uniswapFee == 500 || uniswapFee == 3000 || uniswapFee == 10000);
+
+        // Set exchange rates and quotes for the specified fee tier
+        mockUniswapRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3050 * 1e6 * 1e18 / 1e18);
+        mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), uniswapFee, 3050 * 1e6 * 1e18 / 1e18);
+
+        // Set preferred pool fee
+        vm.prank(owner);
+        arbitrageBot.setPreferredUniswapPoolFee(address(mockWETH), address(mockUSDC), uniswapFee);
+
+        // Verify the fee tier was set correctly
+        uint24 preferredFee = arbitrageBot.getPreferredUniswapPoolFee(address(mockWETH), address(mockUSDC));
+        assertEq(preferredFee, uniswapFee, "Preferred fee tier should be set correctly");
+    }
+
+    /**
+     * @notice Fuzz test for different flash loan amounts
+     * @param loanAmount Amount to borrow in flash loan
+     */
+    function testFuzz_FlashLoanAmount(uint256 loanAmount) public {
+        // Bound loan amount to reasonable values (0.1-10 ETH)
+        loanAmount = bound(loanAmount, 0.1 ether, 10 ether);
+
+        // Set up a profitable scenario
+        mockUniswapRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3050 * 1e6 * 1e18 / 1e18);
+        mockUniswapRouter.setExchangeRate(address(mockUSDC), address(mockWETH), 1e18 / (3050 * 1e6));
+
+        mockPancakeRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3000 * 1e6 * 1e18 / 1e18);
+        mockPancakeRouter.setExchangeRate(address(mockUSDC), address(mockWETH), 1e18 / (3000 * 1e6));
+
+        mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), 500, 3050 * 1e6 * 1e18 / 1e18);
+        mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, 1e18 / (3050 * 1e6));
+
+        // Calculate flash loan fee
+        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
+
+        // Prepare for arbitrage
+        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 1 ether);
+
+        vm.startPrank(address(arbitrageBot));
+        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 1 ether);
+        mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
+        vm.stopPrank();
+
+        // Execute arbitrage
+        vm.prank(owner);
+        arbitrageBot.executeArbitrage(
+            address(mockWETH),
+            address(mockUSDC),
+            loanAmount,
+            500,
+            true // Uniswap to PancakeSwap
+        );
+
+        // Verify owner received profit
+        uint256 ownerBalance = mockWETH.balanceOf(owner);
+        assertGt(ownerBalance, 0, "Owner should have received profit");
+    }
 }
