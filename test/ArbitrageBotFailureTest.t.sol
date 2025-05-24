@@ -154,15 +154,14 @@ contract ArbitrageBotFailureTest is Test {
     function testFailure_NoProfitOpportunity() public {
         // Prices are the same on both DEXes, so there's no profit opportunity
 
-        // Prepare for arbitrage
+        // Prepare for arbitrage (no flash loan fee for Balancer)
         uint256 loanAmount = 1 ether;
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
 
-        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.mint(address(arbitrageBot), loanAmount + 0.1 ether);
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 0.1 ether);
-        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.approve(address(mockBalancerVault), loanAmount + 0.1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + 0.1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();
 
@@ -184,15 +183,14 @@ contract ArbitrageBotFailureTest is Test {
         mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), 500, 3005 * 1e6 * 1e18 / 1e18);
         mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, uint256(1e18) / (3005 * 1e6));
 
-        // Prepare for arbitrage
+        // Prepare for arbitrage (no flash loan fee for Balancer)
         uint256 loanAmount = 1 ether;
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
 
-        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.mint(address(arbitrageBot), loanAmount + 0.1 ether);
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 0.1 ether);
-        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.approve(address(mockBalancerVault), loanAmount + 0.1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + 0.1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();
 
@@ -239,15 +237,14 @@ contract ArbitrageBotFailureTest is Test {
         vm.prank(owner);
         arbitrageBot.setMinProfitThreshold(0);
 
-        // Prepare for arbitrage
+        // Prepare for arbitrage (no flash loan fee for Balancer)
         uint256 loanAmount = 1 ether;
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
 
-        // Only mint enough for the loan but not enough to cover the loss
+        // Only mint the loan amount but not enough to cover the loss
         mockWETH.mint(address(arbitrageBot), loanAmount);
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee);
+        mockWETH.approve(address(mockBalancerVault), loanAmount);
         mockWETH.approve(address(mockUniswapRouter), loanAmount);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();

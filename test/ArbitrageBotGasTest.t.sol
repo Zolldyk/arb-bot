@@ -98,15 +98,14 @@ contract ArbitrageBotGasTest is Test {
      * @notice Measure gas usage of the executeArbitrage function
      */
     function testGas_ExecuteArbitrage() public {
-        // Prepare for arbitrage
+        // Prepare for arbitrage (no flash loan fee for Balancer)
         uint256 loanAmount = 1 ether;
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
 
-        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.mint(address(arbitrageBot), loanAmount + 0.1 ether);
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 0.1 ether);
-        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.approve(address(mockBalancerVault), loanAmount + 0.1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + 0.1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();
 
@@ -130,15 +129,14 @@ contract ArbitrageBotGasTest is Test {
      * @notice Compare gas usage between different arbitrage directions
      */
     function testGas_ArbitrageDirections() public {
-        // Prepare for arbitrage
+        // Prepare for arbitrage (no flash loan fee for Balancer)
         uint256 loanAmount = 1 ether;
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
 
-        mockWETH.mint(address(arbitrageBot), (loanAmount + flashLoanFee + 0.1 ether) * 2); // For 2 tests
+        mockWETH.mint(address(arbitrageBot), (loanAmount + 0.1 ether) * 2); // For 2 tests
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), (loanAmount + flashLoanFee + 0.1 ether) * 2);
-        mockWETH.approve(address(mockUniswapRouter), (loanAmount + flashLoanFee + 0.1 ether) * 2);
+        mockWETH.approve(address(mockBalancerVault), (loanAmount + 0.1 ether) * 2);
+        mockWETH.approve(address(mockUniswapRouter), (loanAmount + 0.1 ether) * 2);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();
 
@@ -188,14 +186,14 @@ contract ArbitrageBotGasTest is Test {
 
         for (uint256 i = 0; i < loanAmounts.length; i++) {
             uint256 loanAmount = loanAmounts[i];
-            uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
+            // No flash loan fee for Balancer
 
             // Prepare for arbitrage
-            mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 0.1 ether);
+            mockWETH.mint(address(arbitrageBot), loanAmount + 0.1 ether);
 
             vm.startPrank(address(arbitrageBot));
-            mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 0.1 ether);
-            mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 0.1 ether);
+            mockWETH.approve(address(mockBalancerVault), loanAmount + 0.1 ether);
+            mockWETH.approve(address(mockUniswapRouter), loanAmount + 0.1 ether);
             mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
             vm.stopPrank();
 
@@ -237,15 +235,14 @@ contract ArbitrageBotGasTest is Test {
             vm.prank(owner);
             arbitrageBot.setPreferredUniswapPoolFee(address(mockWETH), address(mockUSDC), feeTiers[i]);
 
-            // Prepare for arbitrage
+            // Prepare for arbitrage (no flash loan fee for Balancer)
             uint256 loanAmount = 1 ether;
-            uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
 
-            mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 0.1 ether);
+            mockWETH.mint(address(arbitrageBot), loanAmount + 0.1 ether);
 
             vm.startPrank(address(arbitrageBot));
-            mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 0.1 ether);
-            mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 0.1 ether);
+            mockWETH.approve(address(mockBalancerVault), loanAmount + 0.1 ether);
+            mockWETH.approve(address(mockUniswapRouter), loanAmount + 0.1 ether);
             mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
             vm.stopPrank();
 
@@ -378,17 +375,16 @@ contract ArbitrageBotGasTest is Test {
      */
     function testGas_SlippageTolerance() public {
         uint256 loanAmount = 1 ether;
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
 
-        // Test with low slippage (0.1%)
+        // Test with low slippage (0.1%) - no flash loan fee for Balancer
         vm.prank(owner);
         arbitrageBot.setSlippageTolerance(10);
 
-        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.mint(address(arbitrageBot), loanAmount + 0.1 ether);
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 0.1 ether);
-        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.approve(address(mockBalancerVault), loanAmount + 0.1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + 0.1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();
 
@@ -400,15 +396,15 @@ contract ArbitrageBotGasTest is Test {
         uint256 gasUsed1 = startGas1 - gasleft();
         console.log("Gas used with 0.1% slippage: %s", gasUsed1);
 
-        // Test with high slippage (1%)
+        // Test with high slippage (1%) - no flash loan fee for Balancer
         vm.prank(owner);
         arbitrageBot.setSlippageTolerance(100);
 
-        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.mint(address(arbitrageBot), loanAmount + 0.1 ether);
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 0.1 ether);
-        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 0.1 ether);
+        mockWETH.approve(address(mockBalancerVault), loanAmount + 0.1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + 0.1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();
 

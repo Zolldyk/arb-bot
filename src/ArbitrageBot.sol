@@ -236,8 +236,8 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
 
         // Amounts
         uint256 flashLoanAmount = amounts[0];
-        uint256 flashLoanFee = feeAmounts[0];
-        uint256 repayAmount = flashLoanAmount + flashLoanFee;
+        uint256 flashLoanFee = feeAmounts[0]; // Should be 0 for Balancer flash loans
+        uint256 repayAmount = flashLoanAmount + flashLoanFee; // repayAmount = flashLoanAmount since fee is 0
 
         // Initial balance of the borrowed token
         uint256 initialBalance = IERC20(params.tokenBorrow).balanceOf(address(this));

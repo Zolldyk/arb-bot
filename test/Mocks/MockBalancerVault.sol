@@ -11,8 +11,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  * @dev Used for testing the flash loan functionality of the arbitrage bot
  */
 contract MockBalancerVault {
-    // Fee for flash loans (0.09%)
-    uint256 public constant FLASH_LOAN_FEE_PERCENTAGE = 9 * 1e15; // 0.09% = 9/10000 = 9*10^15/10^18
+    // Balancer flash loans are fee-free
+    uint256 public constant FLASH_LOAN_FEE_PERCENTAGE = 0; // 0% fee for Balancer
 
     // Function to simulate a flash loan
     function flashLoan(address recipient, address[] memory tokens, uint256[] memory amounts, bytes memory userData)
@@ -22,10 +22,9 @@ contract MockBalancerVault {
 
         // For each token, send the requested amount to the recipient
         for (uint256 i = 0; i < tokens.length; i++) {
-            // Calculate flash loan fee
-            uint256 feeAmount = (amounts[i] * FLASH_LOAN_FEE_PERCENTAGE) / 1e18;
+            // Balancer flash loans have zero fees
             uint256[] memory feeAmounts = new uint256[](tokens.length);
-            feeAmounts[i] = feeAmount;
+            feeAmounts[i] = 0; // No fee for Balancer flash loans
 
             // Transfer the tokens to the recipient (assuming we have them)
             // In a test environment, we'll use vm.deal to make sure this contract has enough
@@ -41,11 +40,8 @@ contract MockBalancerVault {
 
             require(success, "Flash loan callback failed");
 
-            // Verify the flash loan has been repaid (amount + fee)
-            require(
-                IERC20(tokens[i]).transferFrom(recipient, address(this), amounts[i] + feeAmount),
-                "Flash loan not repaid"
-            );
+            // Verify the flash loan has been repaid (only the borrowed amount, no fee)
+            require(IERC20(tokens[i]).transferFrom(recipient, address(this), amounts[i]), "Flash loan not repaid");
         }
     }
 }

@@ -101,12 +101,12 @@ contract ArbitrageBotUnitTest is Test {
      * @dev Verifies the flash loan callback is executed correctly
      */
     function testFlashLoanCallback() public {
-        // Prepare tokens for repayment
-        mockWETH.mint(address(arbitrageBot), 1.01 ether); // Amount + fee
+        // Prepare tokens for repayment (only the loan amount, no fee for Balancer)
+        mockWETH.mint(address(arbitrageBot), 1 ether); // Amount only, no fee
 
         // Approve vault to take back tokens
         vm.prank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), 1.01 ether);
+        mockWETH.approve(address(mockBalancerVault), 1 ether);
 
         // Prepare flash loan parameters
         address[] memory tokens = new address[](1);
@@ -126,7 +126,7 @@ contract ArbitrageBotUnitTest is Test {
             })
         );
 
-        // Execute flash loan to call receiveFlashLoan on the arbitrage bot
+        // Execute flash loan - this will call receiveFlashLoan on the arbitrage bot
         vm.prank(owner);
         mockBalancerVault.flashLoan(address(arbitrageBot), tokens, amounts, userData);
 
@@ -134,9 +134,7 @@ contract ArbitrageBotUnitTest is Test {
         assertGe(mockWETH.balanceOf(address(mockBalancerVault)), 100 ether);
     }
 
-
-
-     /**
+    /**
      * @notice Test that arbitrage execution fails when profit is below threshold
      */
     function testArbitrageFailsBelowProfitThreshold() public {
@@ -145,17 +143,17 @@ contract ArbitrageBotUnitTest is Test {
         // Uniswap: 1 WETH = 3001 USDC (only 0.03% difference, not enough to cover fees)
         mockUniswapRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3001 * 1e6 * 1e18 / 1e18);
         mockUniswapRouter.setExchangeRate(address(mockUSDC), address(mockWETH), uint256(1e18) / (3001 * 1e6));
-        
+
         // Update quoter
         mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), 500, 3001 * 1e6 * 1e18 / 1e18);
         mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, uint256(1e18) / (3001 * 1e6));
-        
-        // Prepare for arbitrage
-        deal(address(mockWETH), address(arbitrageBot), 1.01 ether);
-        
+
+        // Prepare for arbitrage (no flash loan fee for Balancer)
+        deal(address(mockWETH), address(arbitrageBot), 1 ether);
+
         vm.prank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), 1.01 ether);
-        
+        mockWETH.approve(address(mockBalancerVault), 1 ether);
+
         // Try to execute arbitrage
         vm.expectRevert();
         vm.prank(owner);
@@ -168,7 +166,6 @@ contract ArbitrageBotUnitTest is Test {
         );
     }
 
-
     /**
      * @notice Test successful arbitrage execution with profit
      */
@@ -178,24 +175,24 @@ contract ArbitrageBotUnitTest is Test {
         // Uniswap: 1 WETH = 3050 USDC (1.67% difference, should be enough for profit)
         mockUniswapRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3050 * 1e6 * 1e18 / 1e18);
         mockUniswapRouter.setExchangeRate(address(mockUSDC), address(mockWETH), uint256(1e18) / (3050 * 1e6));
-        
+
         // Update quoter
         mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), 500, 3050 * 1e6 * 1e18 / 1e18);
         mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, uint256(1e18) / (3050 * 1e6));
-        
+
         // Record initial owner balance
         uint256 initialOwnerBalance = mockWETH.balanceOf(owner);
-        
-        // Give the arbitrageBot some WETH to handle the fees
+
+        // Give the arbitrageBot some WETH (no flash loan fee needed for Balancer)
         mockWETH.mint(address(arbitrageBot), 1.1 ether);
-        
+
         // Approve tokens for the arbitrage
         vm.startPrank(address(arbitrageBot));
         mockWETH.approve(address(mockBalancerVault), 1.1 ether);
         mockWETH.approve(address(mockUniswapRouter), 1.1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 10000000 * 1e6);
         vm.stopPrank();
-        
+
         // Execute arbitrage
         vm.prank(owner);
         arbitrageBot.executeArbitrage(
@@ -205,40 +202,37 @@ contract ArbitrageBotUnitTest is Test {
             500,
             true // Uniswap to PancakeSwap (buy low on PancakeSwap, sell high on Uniswap)
         );
-        
+
         // Check that owner received profit
         uint256 finalOwnerBalance = mockWETH.balanceOf(owner);
         assertGt(finalOwnerBalance, initialOwnerBalance, "Owner should have received profit");
     }
 
-
-     /**
+    /**
      * @notice Test arbitrage with token approval and transfers
      */
     function testArbitrageWithTokenApprovals() public {
         // Set up a profitable arbitrage scenario
         mockUniswapRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3050 * 1e6 * 1e18 / 1e18);
-        
+
         // Record initial approval state
         vm.prank(address(arbitrageBot));
-        uint256 initialUniswapAllowance = mockWETH.allowance(address(arbitrageBot), address(mockUniswapRouter));
-        
-        // Give the arbitrageBot some WETH
-        mockWETH.mint(address(arbitrageBot), 1.1 ether);
-        
+
+        // Give the arbitrageBot some WETH (no flash loan fee for Balancer)
+        mockWETH.mint(address(arbitrageBot), 1 ether);
+
         // Execute arbitrage
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), 1.1 ether);
-        mockWETH.approve(address(mockUniswapRouter), 1.1 ether);
+        mockWETH.approve(address(mockBalancerVault), 1 ether);
+        mockWETH.approve(address(mockUniswapRouter), 1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 10000000 * 1e6);
         vm.stopPrank();
-        
+
         // Verify approvals were set correctly
         vm.prank(address(arbitrageBot));
         uint256 uniswapAllowance = mockWETH.allowance(address(arbitrageBot), address(mockUniswapRouter));
-        assertEq(uniswapAllowance, 1.1 ether, "Token approval should be set correctly");
+        assertEq(uniswapAllowance, 1 ether, "Token approval should be set correctly");
     }
-
 
     /**
      * @notice Test circuit breaker functionality
@@ -247,43 +241,30 @@ contract ArbitrageBotUnitTest is Test {
         // Toggle the circuit breaker to pause the contract
         vm.prank(owner);
         arbitrageBot.toggleActive();
-        
+
         // Prepare for arbitrage
-        mockWETH.mint(address(arbitrageBot), 1.1 ether);
-        
+        mockWETH.mint(address(arbitrageBot), 1 ether);
+
         // Try to execute arbitrage while paused
         vm.expectRevert();
         vm.prank(owner);
-        arbitrageBot.executeArbitrage(
-            address(mockWETH),
-            address(mockUSDC),
-            1 ether,
-            500,
-            true
-        );
-        
+        arbitrageBot.executeArbitrage(address(mockWETH), address(mockUSDC), 1 ether, 500, true);
+
         // Toggle back to active
         vm.prank(owner);
         arbitrageBot.toggleActive();
-        
+
         // Now arbitrage should work
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), 1.1 ether);
-        mockWETH.approve(address(mockUniswapRouter), 1.1 ether);
+        mockWETH.approve(address(mockBalancerVault), 1 ether);
+        mockWETH.approve(address(mockUniswapRouter), 1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 10000000 * 1e6);
         vm.stopPrank();
-        
+
         // Execute arbitrage
         vm.prank(owner);
-        arbitrageBot.executeArbitrage(
-            address(mockWETH),
-            address(mockUSDC),
-            1 ether,
-            500,
-            true
-        );
+        arbitrageBot.executeArbitrage(address(mockWETH), address(mockUSDC), 1 ether, 500, true);
     }
-
 
     /**
      * @notice Test emergency withdrawal functionality
@@ -292,23 +273,23 @@ contract ArbitrageBotUnitTest is Test {
         // Send some tokens to the arbitrage bot
         mockWETH.mint(address(arbitrageBot), 1 ether);
         mockUSDC.mint(address(arbitrageBot), 1000 * 1e6);
-        
+
         // Check initial balances
         uint256 initialOwnerWETH = mockWETH.balanceOf(owner);
         uint256 initialOwnerUSDC = mockUSDC.balanceOf(owner);
-        
+
         // Emergency withdraw WETH
         vm.prank(owner);
         arbitrageBot.emergencyWithdraw(address(mockWETH));
-        
+
         // Check balances after WETH withdrawal
         assertEq(mockWETH.balanceOf(owner), initialOwnerWETH + 1 ether, "Owner should receive all WETH");
         assertEq(mockWETH.balanceOf(address(arbitrageBot)), 0, "Contract should have 0 WETH");
-        
+
         // Emergency withdraw USDC
         vm.prank(owner);
         arbitrageBot.emergencyWithdraw(address(mockUSDC));
-        
+
         // Check balances after USDC withdrawal
         assertEq(mockUSDC.balanceOf(owner), initialOwnerUSDC + 1000 * 1e6, "Owner should receive all USDC");
         assertEq(mockUSDC.balanceOf(address(arbitrageBot)), 0, "Contract should have 0 USDC");

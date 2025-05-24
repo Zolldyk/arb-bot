@@ -155,7 +155,7 @@ contract ArbitrageBotFuzzTest is Test {
         mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), 500, uniswapPrice * 1e18 / 1e18);
         mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, 1e18 / uniswapPrice);
 
-        // Calculate expected profit
+        // Calculate expected profit (no flash loan fee for Balancer)
         uint256 step1Output = loanAmount * pancakePrice / 1e18; // Buy USDC with WETH on PancakeSwap
         uint256 step1Fee = loanAmount * 25 / 10000; // PancakeSwap fee (0.25%)
         uint256 step1OutputAfterFee = loanAmount * (10000 - 25) / 10000 * pancakePrice / 1e18;
@@ -164,19 +164,18 @@ contract ArbitrageBotFuzzTest is Test {
         uint256 step2Fee = step1OutputAfterFee * 5 / 10000; // Uniswap fee (0.05% pool)
         uint256 step2OutputAfterFee = step1OutputAfterFee * (10000 - 5) / 10000 * 1e18 / uniswapPrice;
 
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // Balancer flash loan fee (0.09%)
-        uint256 expectedProfit =
-            step2OutputAfterFee > (loanAmount + flashLoanFee) ? step2OutputAfterFee - (loanAmount + flashLoanFee) : 0;
+        // No flash loan fee for Balancer
+        uint256 expectedProfit = step2OutputAfterFee > loanAmount ? step2OutputAfterFee - loanAmount : 0;
 
         // Determine if arbitrage should be profitable
         bool shouldBeSuccessful = expectedProfit >= MIN_PROFIT_THRESHOLD;
 
-        // Prepare for arbitrage
-        mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 1 ether); // Extra buffer
+        // Prepare for arbitrage (no flash loan fee for Balancer)
+        mockWETH.mint(address(arbitrageBot), loanAmount + 1 ether); // Extra buffer
 
         vm.startPrank(address(arbitrageBot));
-        mockWETH.approve(address(mockBalancerVault), loanAmount + flashLoanFee + 1 ether);
-        mockWETH.approve(address(mockUniswapRouter), loanAmount + flashLoanFee + 1 ether);
+        mockWETH.approve(address(mockBalancerVault), loanAmount + 1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + 1 ether);
         mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
         vm.stopPrank();
 
@@ -235,16 +234,28 @@ contract ArbitrageBotFuzzTest is Test {
 
         // Set up a profitable scenario
         mockUniswapRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3050 * 1e6 * 1e18 / 1e18);
-        mockUniswapRouter.setExchangeRate(address(mockUSDC), address(mockWETH), 1e18 / (3050 * 1e6));
+        mockUniswapRouter.setExchangeRate(address(mockUSDC), address(mockWETH), uint256(1e18) / (3050 * 1e6));
 
         mockPancakeRouter.setExchangeRate(address(mockWETH), address(mockUSDC), 3000 * 1e6 * 1e18 / 1e18);
-        mockPancakeRouter.setExchangeRate(address(mockUSDC), address(mockWETH), 1e18 / (3000 * 1e6));
+        mockPancakeRouter.setExchangeRate(address(mockUSDC), address(mockWETH), uint256(1e18) / (3000 * 1e6));
 
         mockUniswapQuoter.setQuote(address(mockWETH), address(mockUSDC), 500, 3050 * 1e6 * 1e18 / 1e18);
-        mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, 1e18 / (3050 * 1e6));
+        mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, uint256(1e18) / (3050 * 1e6));
+
+        // No flash loan fee for Balancer
+
+        // Prepare for arbitrage
+        mockWETH.mint(address(arbitrageBot), loanAmount + 1 ether);
+
+        vm.startPrank(address(arbitrageBot));
+        mockWETH.approve(address(mockBalancerVault), loanAmount + 1 ether);
+        mockWETH.approve(address(mockUniswapRouter), loanAmount + 1 ether);
+        mockUSDC.approve(address(mockPancakeRouter), 100_000_000 * 1e6);
+        vm.stopPrank();
+        mockUniswapQuoter.setQuote(address(mockUSDC), address(mockWETH), 500, uint256(1e18) / (3050 * 1e6));
 
         // Calculate flash loan fee
-        uint256 flashLoanFee = loanAmount * 9 / 10000; // 0.09%
+        uint256 flashLoanFee = loanAmount * 0; // 0.09%
 
         // Prepare for arbitrage
         mockWETH.mint(address(arbitrageBot), loanAmount + flashLoanFee + 1 ether);
