@@ -4,7 +4,6 @@ pragma solidity ^0.8.24;
 import {IPancakeRouter} from "../../src/Interfaces/IPancakeRouter.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
-
 /**
  * @title MockPancakeRouter
  * @notice Mock implementation of PancakeSwap Router for testing
@@ -54,7 +53,8 @@ contract MockPancakeRouter {
             uint256 feeAmount = (amounts[i] * FEE_PERCENTAGE) / 10000;
             uint256 amountInAfterFee = amounts[i] - feeAmount;
 
-            // Calculate output amount
+            // Calculate output amount with proper decimal handling
+            // The rate should already account for decimal differences
             amounts[i + 1] = (amountInAfterFee * rate) / 1e18;
         }
 

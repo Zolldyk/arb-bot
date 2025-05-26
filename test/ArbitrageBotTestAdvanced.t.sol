@@ -46,35 +46,31 @@ contract ArbitrageBotTestAdvanced is Test {
     // Fork block number
     uint256 public forkBlock = 16900000; // Ethereum block from early 2023
 
-
     /**
      * @notice Setup function that runs before each test
      */
-
     function setUp() public virtual {
+        // Load the RPC URL from environment variable
+        string memory rpcUrl = vm.envString("ETH_RPC_URL");
+
         // Fork Ethereum mainnet at a specific block
-        vm.createSelectFork("ETH_RPC_URL", forkBlock);
-        
+        vm.createSelectFork(rpcUrl, forkBlock);
+
         // Deploy the arbitrage bot with owner
         vm.startPrank(owner);
-        arbitrageBot = new ArbitrageBot(
-            BALANCER_VAULT,
-            UNISWAP_ROUTER,
-            PANCAKE_ROUTER,
-            UNISWAP_QUOTER,
-            MIN_PROFIT_THRESHOLD
-        );
-        
+        arbitrageBot =
+            new ArbitrageBot(BALANCER_VAULT, UNISWAP_ROUTER, PANCAKE_ROUTER, UNISWAP_QUOTER, MIN_PROFIT_THRESHOLD);
+
         // Set price feeds
         arbitrageBot.setPriceFeed(WETH, WETH_USD_FEED);
         arbitrageBot.setPriceFeed(USDC, USDC_USD_FEED);
         arbitrageBot.setPriceFeed(DAI, DAI_USD_FEED);
-        
+
         // Set preferred Uniswap pool fees for token pairs
-        arbitrageBot.setPreferredUniswapPoolFee(WETH, USDC, 500);  // 0.05%
-        arbitrageBot.setPreferredUniswapPoolFee(WETH, DAI, 3000);  // 0.3%
-        arbitrageBot.setPreferredUniswapPoolFee(USDC, DAI, 100);   // 0.01%
-        
+        arbitrageBot.setPreferredUniswapPoolFee(WETH, USDC, 500); // 0.05%
+        arbitrageBot.setPreferredUniswapPoolFee(WETH, DAI, 3000); // 0.3%
+        arbitrageBot.setPreferredUniswapPoolFee(USDC, DAI, 100); // 0.01%
+
         vm.stopPrank();
     }
 }
