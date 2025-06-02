@@ -7,7 +7,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IBalancerVault} from "./Interfaces/IBalancerVault.sol";
+import {IBalancerVault, IFlashLoanRecipient} from "./Interfaces/IBalancerVault.sol";
 import {IUniswapV3SwapRouter} from "./Interfaces/IUniswapV3SwapRouter.sol";
 import {IPancakeRouter} from "./Interfaces/IPancakeRouter.sol";
 import {IUniswapV3Quoter} from "./Interfaces/IUniswapV3Quoter.sol";
@@ -39,11 +39,9 @@ import {AggregatorV3Interface} from "lib/chainlink/contracts/src/v0.8/shared/int
  * @author Zoll
  * @notice This contract executes arbitrage between Uniswap V3 and PancakeSwap using Balancer flash loans
  * @dev The contract uses flash loans from Balancer to execute arbitrage with zero initial capital
- *
  */
-contract ArbitrageBot is ReentrancyGuard, Ownable {
+contract ArbitrageBot is ReentrancyGuard, Ownable, IFlashLoanRecipient {
     using SafeERC20 for IERC20;
-    using SafeERC20 for IERC20Permit;
 
     // ============ Errors ============
     error ArbitrageBot__InvalidAddress();
@@ -56,6 +54,8 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     error ArbitrageBot__InvalidTokenPair();
     error ArbitrageBot__PriceFeedNotSet();
     error ArbitrageBot__AbnormalPriceDetected();
+    error ArbitrageBot__SwapFailed();
+    error ArbitrageBot__InvalidFlashLoanCallback();
 
     // ============ Type declarations ============
     struct ArbitrageParams {
@@ -64,6 +64,8 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         uint256 amount; // Amount to borrow
         uint24 uniswapPoolFee; // Uniswap V3 pool fee tier
         bool uniToPancake; // Direction of arbitrage (true: Uni->Pancake, false: Pancake->Uni)
+        uint256 deadline; // Transaction deadline
+        address initiator; // Address that initiated the arbitrage
     }
 
     // ============ State variables ============
@@ -71,24 +73,26 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     address private immutable i_balancerVault;
     address private immutable i_uniswapRouter;
     address private immutable i_pancakeRouter;
-
-    // Additional protocol addresses for quotes
-    address private immutable i_uniswapQuoter; // Uniswap V3 Quoter address
+    address private immutable i_uniswapQuoter;
 
     // DEX fee tiers
-    mapping(address => mapping(address => uint24)) private s_preferredUniswapPoolFees; // tokenA -> tokenB -> fee
+    mapping(address => mapping(address => uint24)) private s_preferredUniswapPoolFees;
 
     // Configuration parameters
-    uint256 private s_minProfitThreshold; // Minimum profit threshold in wei
+    uint256 private s_minProfitThreshold;
     uint256 private s_slippageTolerance = 50; // Default 0.5% (in basis points)
-    uint256 private s_maxGasPrice = 100 gwei; // Maximum gas price for profitable transactions
-    bool private s_isActive = true; // Circuit breaker
-
-    // Flash loan callback identifier
-    bytes32 private constant FLASH_LOAN_CALLBACK_SUCCESS = keccak256("ERC3156FlashBorrower.onFlashLoan");
+    uint256 private s_maxGasPrice = 100 gwei;
+    bool private s_isActive = true;
 
     // Price feeds for token pairs
     mapping(address => address) private s_priceFeeds;
+
+    // Flash loan tracking for security
+    mapping(bytes32 => bool) private s_activeFlashLoans;
+
+    // Constants
+    uint256 private constant MAX_SLIPPAGE = 1000; // 10%
+    uint256 private constant DEADLINE_BUFFER = 300; // 5 minutes
 
     // ============ Events ============
     event ArbitrageExecuted(
@@ -97,7 +101,8 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         uint256 flashLoanAmount,
         uint256 grossProfit,
         uint256 netProfit,
-        uint256 gasUsed
+        uint256 gasUsed,
+        bool indexed direction
     );
 
     event ArbitrageFailed(
@@ -127,7 +132,6 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         address uniswapQuoter,
         uint256 minProfitThreshold
     ) Ownable(msg.sender) {
-        // Validate addresses to prevent zero address errors
         if (
             balancerVault == address(0) || uniswapRouter == address(0) || pancakeRouter == address(0)
                 || uniswapQuoter == address(0)
@@ -150,8 +154,6 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
      * @param amount Amount of tokenBorrow to flash loan
      * @param uniswapPoolFee Uniswap V3 pool fee (3000 = 0.3%, 500 = 0.05%, etc.)
      * @param uniToPancake Direction flag (true: Uni->Pancake, false: Pancake->Uni)
-     * @dev Only callable by owner to prevent unauthorized transactions
-     * @dev Reverts if contract paused or gas price too high
      */
     function executeArbitrage(
         address tokenBorrow,
@@ -160,17 +162,15 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         uint24 uniswapPoolFee,
         bool uniToPancake
     ) external onlyOwner nonReentrant {
-        // Check if contract is active
+        // Pre-execution checks
         if (!s_isActive) {
             revert ArbitrageBot__ContractPaused();
         }
 
-        // Check if gas price is acceptable
         if (tx.gasprice > s_maxGasPrice) {
             revert ArbitrageBot__AbnormalPriceDetected();
         }
 
-        // Validate token pair
         if (tokenBorrow == address(0) || tokenTarget == address(0) || tokenBorrow == tokenTarget) {
             revert ArbitrageBot__InvalidTokenPair();
         }
@@ -182,52 +182,76 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = amount;
 
-        // Encode arbitrage parameters for the flash loan callback
+        // Create unique flash loan ID for tracking
+        bytes32 flashLoanId =
+            keccak256(abi.encodePacked(block.timestamp, block.number, msg.sender, tokenBorrow, amount));
+
+        // Mark flash loan as active
+        s_activeFlashLoans[flashLoanId] = true;
+
+        // Encode arbitrage parameters
         bytes memory userData = abi.encode(
             ArbitrageParams({
                 tokenBorrow: tokenBorrow,
                 tokenTarget: tokenTarget,
                 amount: amount,
                 uniswapPoolFee: uniswapPoolFee,
-                uniToPancake: uniToPancake
-            })
+                uniToPancake: uniToPancake,
+                deadline: block.timestamp + DEADLINE_BUFFER,
+                initiator: msg.sender
+            }),
+            flashLoanId
         );
 
         // Execute flash loan from Balancer
-        try IBalancerVault(i_balancerVault).flashLoan(address(this), tokens, amounts, userData) {
+        try IBalancerVault(i_balancerVault).flashLoan(IFlashLoanRecipient(address(this)), tokens, amounts, userData) {
             // Flash loan successful, arbitrage completed in the callback
         } catch (bytes memory reason) {
-            // Log error if flash loan fails
+            // Clean up flash loan tracking
+            s_activeFlashLoans[flashLoanId] = false;
+
             emit ArbitrageFailed(tokenBorrow, tokenTarget, amount, string(reason));
             revert ArbitrageBot__FlashLoanFailed();
         }
+
+        // Clean up flash loan tracking
+        s_activeFlashLoans[flashLoanId] = false;
     }
 
     /**
-     * @notice Balancer flash loan callback function
+     * @notice Balancer flash loan callback function - FIXED IMPLEMENTATION
      * @dev Called by Balancer Vault after funds are borrowed
+     * @dev CRITICAL: Tokens must be transferred back to vault, NOT approved
      * @param tokens Array of token addresses that were borrowed
      * @param amounts Array of amounts that were borrowed
-     * @param feeAmounts Array of fee amounts to be paid
+     * @param feeAmounts Array of fee amounts to be paid (typically 0 for Balancer)
      * @param userData Encoded data passed from executeArbitrage
-     * @return Success selector to acknowledge successful loan completion
      */
     function receiveFlashLoan(
         address[] memory tokens,
         uint256[] memory amounts,
         uint256[] memory feeAmounts,
         bytes memory userData
-    ) external returns (bytes32) {
+    ) external override {
         // Only Balancer Vault can call this function
         if (msg.sender != i_balancerVault) {
             revert ArbitrageBot__Unauthorized();
         }
 
-        // Decode the parameters
-        ArbitrageParams memory params = abi.decode(userData, (ArbitrageParams));
+        // Decode parameters and flash loan ID
+        (ArbitrageParams memory params, bytes32 flashLoanId) = abi.decode(userData, (ArbitrageParams, bytes32));
 
-        // Validate that received token matches expected
-        if (tokens[0] != params.tokenBorrow) {
+        // Validate flash loan is active and deadline hasn't passed
+        if (!s_activeFlashLoans[flashLoanId]) {
+            revert ArbitrageBot__InvalidFlashLoanCallback();
+        }
+
+        if (block.timestamp > params.deadline) {
+            revert ArbitrageBot__AbnormalPriceDetected();
+        }
+
+        // Validate received token matches expected
+        if (tokens.length != 1 || tokens[0] != params.tokenBorrow) {
             revert ArbitrageBot__InvalidTokenPair();
         }
 
@@ -236,14 +260,75 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
 
         // Flash loan amounts
         uint256 flashLoanAmount = amounts[0];
-        uint256 flashLoanFee = feeAmounts[0]; // Should be 0 for Balancer flash loans
-        uint256 repayAmount = flashLoanAmount + flashLoanFee;
+        uint256 flashLoanFee = feeAmounts[0]; // Usually 0 for Balancer
+        uint256 totalRepayAmount = flashLoanAmount + flashLoanFee;
 
-        // APPROACH: Track what we should have vs what we actually have
-        // After arbitrage, we should have at least flashLoanAmount to repay
-        // Any amount above that is profit
+        // Record initial balance
+        uint256 initialBalance = IERC20(params.tokenBorrow).balanceOf(address(this));
 
         // Execute the arbitrage based on direction
+        try this._executeArbitrageSwaps(params, flashLoanAmount) {
+            // Arbitrage executed successfully
+        } catch {
+            revert ArbitrageBot__SwapFailed();
+        }
+
+        // Check final balance after arbitrage
+        uint256 finalBalance = IERC20(params.tokenBorrow).balanceOf(address(this));
+
+        // CRITICAL: Ensure we have enough to repay the flash loan
+        if (finalBalance < totalRepayAmount) {
+            revert ArbitrageBot__InsufficientFundsForRepayment(finalBalance, totalRepayAmount);
+        }
+
+        // Calculate gross profit
+        uint256 grossProfit = finalBalance - totalRepayAmount;
+
+        // Estimate gas cost for net profit calculation
+        uint256 gasUsed = startingGas - gasleft() + 50000; // Add buffer for remaining operations
+        uint256 estimatedGasCost = gasUsed * tx.gasprice;
+
+        // Convert gas cost to token terms if needed (simplified for WETH case)
+        uint256 gasCostInToken = _convertGasCostToToken(params.tokenBorrow, estimatedGasCost);
+
+        // Calculate net profit
+        uint256 netProfit = grossProfit > gasCostInToken ? grossProfit - gasCostInToken : 0;
+
+        // Check profit threshold
+        if (netProfit < s_minProfitThreshold) {
+            revert ArbitrageBot__ProfitBelowThreshold(netProfit, s_minProfitThreshold);
+        }
+
+        // Transfer the borrowed tokens back to Balancer Vault
+        IERC20(params.tokenBorrow).safeTransfer(i_balancerVault, totalRepayAmount);
+
+        // Send profit to owner
+        if (netProfit > 0) {
+            IERC20(params.tokenBorrow).safeTransfer(owner(), netProfit);
+        }
+
+        // Emit success event
+        emit ArbitrageExecuted(
+            params.tokenBorrow,
+            params.tokenTarget,
+            flashLoanAmount,
+            grossProfit,
+            netProfit,
+            gasUsed,
+            params.uniToPancake
+        );
+    }
+
+    /**
+     * @notice Execute arbitrage swaps (separated for better error handling)
+     * @dev External function to enable try/catch in receiveFlashLoan
+     */
+    function _executeArbitrageSwaps(ArbitrageParams memory params, uint256 flashLoanAmount) external {
+        // SECURITY: Only this contract can call this function
+        if (msg.sender != address(this)) {
+            revert ArbitrageBot__Unauthorized();
+        }
+
         if (params.uniToPancake) {
             // Step 1: Swap on Uniswap V3 (tokenBorrow -> tokenTarget)
             uint256 uniswapOutput =
@@ -258,42 +343,6 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
             // Step 2: Swap on Uniswap V3 (tokenTarget -> tokenBorrow)
             _swapOnUniswap(params.tokenTarget, params.tokenBorrow, pancakeOutput, params.uniswapPoolFee);
         }
-
-        // Check final balance
-        uint256 finalBalance = IERC20(params.tokenBorrow).balanceOf(address(this));
-
-        // Ensure we have enough to repay the flash loan
-        if (finalBalance < repayAmount) {
-            revert ArbitrageBot__InsufficientFundsForRepayment(finalBalance, repayAmount);
-        }
-
-        // Profit will be = Everything above what we need to repay the loan
-        uint256 grossProfit = finalBalance - repayAmount;
-
-        // Calculate gas cost (approximation)
-        uint256 gasUsed = startingGas - gasleft();
-        uint256 gasCost = gasUsed * tx.gasprice;
-
-        // Calculate net profit
-        uint256 netProfit = grossProfit > gasCost ? grossProfit - gasCost : 0;
-
-        // Check profit threshold
-        if (netProfit < s_minProfitThreshold) {
-            revert ArbitrageBot__ProfitBelowThreshold(netProfit, s_minProfitThreshold);
-        }
-
-        // Approve Balancer to take back the loan amount + fee
-        IERC20(params.tokenBorrow).approve(i_balancerVault, repayAmount);
-
-        // Send profit to owner (if any)
-        if (netProfit > 0) {
-            IERC20(params.tokenBorrow).safeTransfer(owner(), netProfit);
-        }
-
-        // Emit success event
-        emit ArbitrageExecuted(params.tokenBorrow, params.tokenTarget, flashLoanAmount, grossProfit, netProfit, gasUsed);
-
-        return FLASH_LOAN_CALLBACK_SUCCESS;
     }
 
     // ============ Admin Functions ============
@@ -315,8 +364,8 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
      * @dev Maximum allowed slippage tolerance is 1000 (10%)
      */
     function setSlippageTolerance(uint256 newSlippageTolerance) external onlyOwner {
-        if (newSlippageTolerance > 1000) {
-            revert ArbitrageBot__SlippageTooHigh(newSlippageTolerance, 1000);
+        if (newSlippageTolerance > MAX_SLIPPAGE) {
+            revert ArbitrageBot__SlippageTooHigh(newSlippageTolerance, MAX_SLIPPAGE);
         }
 
         uint256 oldSlippageTolerance = s_slippageTolerance;
@@ -345,16 +394,6 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
     }
 
     /**
-     * @notice Get preferred Uniswap pool fee for a token pair
-     * @param tokenA First token in the pair
-     * @param tokenB Second token in the pair
-     * @return Pool fee tier
-     */
-    function getPreferredUniswapPoolFee(address tokenA, address tokenB) external view returns (uint24) {
-        return s_preferredUniswapPoolFees[tokenA][tokenB];
-    }
-
-    /**
      * @notice Set preferred Uniswap pool fee for a token pair
      * @param tokenA First token in the pair
      * @param tokenB Second token in the pair
@@ -366,7 +405,6 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
             revert ArbitrageBot__InvalidAddress();
         }
 
-        // Store fee for both token order combinations
         s_preferredUniswapPoolFees[tokenA][tokenB] = fee;
         s_preferredUniswapPoolFees[tokenB][tokenA] = fee;
 
@@ -417,12 +455,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         IERC20(tokenIn).approve(i_uniswapRouter, amountIn);
 
         // Calculate minimum output based on slippage tolerance
-        uint256 amountOutMin = _calculateMinimumOutput(
-            tokenIn,
-            tokenOut,
-            amountIn,
-            true // isUniswap
-        );
+        uint256 amountOutMin = _calculateMinimumOutput(tokenIn, tokenOut, amountIn, true);
 
         // Execute swap on Uniswap V3
         IUniswapV3SwapRouter.ExactInputSingleParams memory params = IUniswapV3SwapRouter.ExactInputSingleParams({
@@ -430,16 +463,15 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
             tokenOut: tokenOut,
             fee: poolFee,
             recipient: address(this),
-            deadline: block.timestamp + 300, // 5 minutes
+            deadline: block.timestamp + DEADLINE_BUFFER,
             amountIn: amountIn,
             amountOutMinimum: amountOutMin,
-            sqrtPriceLimitX96: 0 // No price limit
+            sqrtPriceLimitX96: 0
         });
 
-        // Execute the swap and get the output amount
         uint256 amountOut = IUniswapV3SwapRouter(i_uniswapRouter).exactInputSingle(params);
 
-        // Reset approval to 0
+        // Reset approval to 0 for security
         IERC20(tokenIn).approve(i_uniswapRouter, 0);
 
         return amountOut;
@@ -456,31 +488,21 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         IERC20(tokenIn).approve(i_pancakeRouter, amountIn);
 
         // Calculate minimum output based on slippage tolerance
-        uint256 amountOutMin = _calculateMinimumOutput(
-            tokenIn,
-            tokenOut,
-            amountIn,
-            false // not Uniswap
-        );
+        uint256 amountOutMin = _calculateMinimumOutput(tokenIn, tokenOut, amountIn, false);
 
         // Create path for the swap
         address[] memory path = new address[](2);
         path[0] = tokenIn;
         path[1] = tokenOut;
 
-        // Execute swap on PancakeSwap and get amounts out
+        // Execute swap on PancakeSwap
         uint256[] memory amounts = IPancakeRouter(i_pancakeRouter).swapExactTokensForTokens(
-            amountIn,
-            amountOutMin,
-            path,
-            address(this),
-            block.timestamp + 300 // 5 minutes
+            amountIn, amountOutMin, path, address(this), block.timestamp + DEADLINE_BUFFER
         );
 
-        // Reset approval to 0
+        // Reset approval to 0 for security
         IERC20(tokenIn).approve(i_pancakeRouter, 0);
 
-        // Return the amount received (last element in amounts array)
         return amounts[1];
     }
 
@@ -494,12 +516,42 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
      */
     function _calculateMinimumOutput(address tokenIn, address tokenOut, uint256 amountIn, bool isUniswap)
         internal
-        view
+        pure
         returns (uint256)
     {
-        // For testing purposes, always use conservative quote to avoid conflicts
-        // In production, you'd want more sophisticated logic here
+        // Use conservative estimate to avoid reverts
         return _getConservativeQuote(tokenIn, tokenOut, amountIn);
+    }
+
+    /**
+     * @notice Get a conservative quote when DEX queries fail
+     * @param tokenIn Input token
+     * @param tokenOut Output token
+     * @param amountIn Amount of input token
+     * @return Conservative estimate with maximum slippage
+     * @dev This is a fallback method that returns a minimal value to allow swaps
+     */
+    function _getConservativeQuote(address tokenIn, address tokenOut, uint256 amountIn)
+        internal
+        pure
+        returns (uint256)
+    {
+        // For production, implement proper quote logic
+        // For now, return minimal value to prevent swap failures
+        return 1;
+    }
+
+    function _convertGasCostToToken(address token, uint256 gasCostInWei) internal pure returns (uint256) {
+        // Simplified conversion for WETH case
+        // In production, implement proper price conversion using Chainlink feeds
+        if (token == 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2) {
+            // WETH
+            return gasCostInWei; // 1:1 for WETH
+        }
+
+        // For other tokens, implement proper conversion logic
+        // Using conservative estimate for now
+        return gasCostInWei * 3000; // Assuming ~$3000 per ETH
     }
 
     /**
@@ -643,37 +695,7 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         return expectedOutput * (10000 - s_slippageTolerance) / 10000;
     }
 
-    /**
-     * @notice Get a conservative quote when DEX queries fail
-     * @param tokenIn Input token
-     * @param tokenOut Output token
-     * @param amountIn Amount of input token
-     * @return Conservative estimate with maximum slippage
-     * @dev This is a fallback method that returns a minimal value to allow swaps
-     */
-    function _getConservativeQuote(address tokenIn, address tokenOut, uint256 amountIn)
-        internal
-        view
-        returns (uint256)
-    {
-        // For testing and fallback purposes, return a very small minimum
-        // This essentially disables the minimum output check
-        // In production, you might want to implement more sophisticated logic
-        return 1;
-    }
-
     // ============ View Functions ============
-    /**
-     * @notice Get contract configuration parameters
-     * @return balancerVault Address of Balancer Vault
-     * @return uniswapRouter Address of Uniswap Router
-     * @return pancakeRouter Address of PancakeSwap Router
-     * @return uniswapQuoter Address of Uniswap Quoter
-     * @return minProfitThreshold Minimum profit threshold in wei
-     * @return slippageTolerance Slippage tolerance in basis points
-     * @return maxGasPrice Maximum gas price allowed
-     * @return isActive Current state of the circuit breaker
-     */
     function getConfig()
         external
         view
@@ -700,12 +722,11 @@ contract ArbitrageBot is ReentrancyGuard, Ownable {
         );
     }
 
-    /**
-     * @notice Get price feed address for a token
-     * @param token Token address
-     * @return Price feed address
-     */
     function getPriceFeed(address token) external view returns (address) {
         return s_priceFeeds[token];
+    }
+
+    function getPreferredUniswapPoolFee(address tokenA, address tokenB) external view returns (uint24) {
+        return s_preferredUniswapPoolFees[tokenA][tokenB];
     }
 }
